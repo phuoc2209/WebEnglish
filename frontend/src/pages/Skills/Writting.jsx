@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { PenTool, Clock, Star, Users, ChevronRight, Pen, Award } from 'lucide-react';
-import { getSkillLessonsByType } from '../../models/skill.model';
+import { PenTool, Clock, Star, Users, ChevronRight, Pen, Award, RotateCcw } from 'lucide-react';
+import { getSkillLessonsByType, getLessonProgressAndAnswers } from '../../models/skill.model';
 import { useCheckAuth } from '../../hooks/useCheckAuth';
 import { useUserStore } from '../../store/userSlice';
 import Navbar from '../../components/Navbar';
@@ -34,21 +34,94 @@ const Writting = () => {
                 console.log('Lessons response:', response);
                 if (response.status === 'success') {
                     const writingLessons = response.data || [];
-                    const mappedLessons = writingLessons.map(lesson => ({
-                        skill_id: lesson.skill_id,
-                        lesson_type: 'writing',
-                        title: lesson.title,
-                        description: lesson.description || 'No description',
-                        content: lesson.content,
-                        content_preview: lesson.content?.substring(0, 100) + '...' || 'No preview',
-                        level: lesson.level || 'beginner',
-                        duration: '20 minutes',
-                        total_exercises: lesson.exercises?.length || 10,
-                        completed_exercises: 0,
-                        rating: 4.5,
-                        students: 1000,
-                    }));
-                    setLessons(mappedLessons);
+
+                    // Lấy thông tin tiến độ cho từng bài học
+                    const lessonsWithProgress = await Promise.all(
+                        writingLessons.map(async (lesson) => {
+                            try {
+                                const progressResponse = await getLessonProgressAndAnswers(lesson.skill_id, 'writing');
+                                let progressData = null;
+                                let completedExercises = 0;
+                                let totalExercises = lesson.exercises?.length || 10;
+                                let status = 'not_started';
+                                let progressPercent = 0;
+
+                                if (progressResponse.status === 'success') {
+                                    progressData = progressResponse.data;
+                                    status = progressData.progress?.status || 'not_started';
+
+                                    // Lấy số câu hỏi thực tế từ bài học
+                                    if (progressData.lesson && progressData.lesson.exercises) {
+                                        totalExercises = progressData.lesson.exercises.length;
+                                    } else {
+                                        totalExercises = lesson.exercises?.length || 10;
+                                    }
+
+                                    // Tính số câu đã hoàn thành dựa trên submissions mới nhất
+                                    if (progressData.submissions && progressData.submissions.length > 0) {
+                                        // Với skill lessons, mỗi submission là một câu trả lời cho một câu hỏi
+                                        // Lấy số submission duy nhất (mỗi câu hỏi chỉ tính 1 lần)
+                                        const uniqueSubmissions = [];
+                                        const seenQuestions = new Set();
+
+                                        progressData.submissions.forEach(submission => {
+                                            // Sử dụng question làm key để xác định câu hỏi duy nhất
+                                            const questionKey = submission.question;
+                                            if (!seenQuestions.has(questionKey)) {
+                                                seenQuestions.add(questionKey);
+                                                uniqueSubmissions.push(submission);
+                                            }
+                                        });
+
+                                        completedExercises = uniqueSubmissions.length;
+                                    }
+
+                                    // Tính phần trăm tiến độ dựa trên số câu hỏi đã hoàn thành
+                                    progressPercent = totalExercises > 0 ? (completedExercises / totalExercises) * 100 : 0;
+                                }
+
+                                return {
+                                    skill_id: lesson.skill_id,
+                                    lesson_type: 'writing',
+                                    title: lesson.title,
+                                    description: lesson.description || 'No description',
+                                    content: lesson.content,
+                                    content_preview: lesson.content?.substring(0, 100) + '...' || 'No preview',
+                                    level: lesson.level || 'beginner',
+                                    duration: '20 minutes',
+                                    total_exercises: totalExercises,
+                                    completed_exercises: completedExercises,
+                                    rating: 4.5,
+                                    students: 1000,
+                                    progress_data: progressData,
+                                    status: status,
+                                    progress_percent: progressPercent
+                                };
+                            } catch (progressError) {
+                                console.error(`Error fetching progress for lesson ${lesson.skill_id}:`, progressError);
+                                // Trả về bài học với trạng thái mặc định nếu không lấy được tiến độ
+                                return {
+                                    skill_id: lesson.skill_id,
+                                    lesson_type: 'writing',
+                                    title: lesson.title,
+                                    description: lesson.description || 'No description',
+                                    content: lesson.content,
+                                    content_preview: lesson.content?.substring(0, 100) + '...' || 'No preview',
+                                    level: lesson.level || 'beginner',
+                                    duration: '20 minutes',
+                                    total_exercises: lesson.exercises?.length || 10,
+                                    completed_exercises: 0,
+                                    rating: 4.5,
+                                    students: 1000,
+                                    progress_data: null,
+                                    status: 'not_started',
+                                    progress_percent: 0
+                                };
+                            }
+                        })
+                    );
+
+                    setLessons(lessonsWithProgress);
                     setPagination(prev => ({ ...prev, total: response.pagination?.total || writingLessons.length }));
                 } else {
                     throw new Error(response.message);
@@ -88,6 +161,59 @@ const Writting = () => {
 
     const getProgressWidth = (completed, total) => {
         return total > 0 ? (completed / total) * 100 : 0;
+    };
+
+    const getButtonInfo = (lesson) => {
+        const { status, completed_exercises, total_exercises } = lesson;
+
+        // Tính phần trăm tiến độ dựa trên số câu hỏi
+        const progressPercent = total_exercises > 0 ? (completed_exercises / total_exercises) * 100 : 0;
+
+        // Kiểm tra đã hoàn thành hết câu hỏi chưa
+        const isCompleted = completed_exercises >= total_exercises && total_exercises > 0;
+
+        if (isCompleted) {
+            return {
+                primaryText: 'Xem lại',
+                primaryIcon: <Award className="w-4 h-4 mr-1" />,
+                primaryClassName: 'bg-purple-600 hover:bg-purple-700',
+                primaryAction: 'review',
+                secondaryText: 'Làm lại',
+                secondaryIcon: <RotateCcw className="w-4 h-4 mr-1" />,
+                secondaryClassName: 'bg-orange-600 hover:bg-orange-700',
+                secondaryAction: 'retry',
+                showTwoButtons: true
+            };
+        } else if (completed_exercises > 0) {
+            return {
+                primaryText: `Tiếp tục (${completed_exercises}/${total_exercises})`,
+                primaryIcon: <Pen className="w-4 h-4 mr-1" />,
+                primaryClassName: 'bg-green-600 hover:bg-green-700',
+                primaryAction: 'continue',
+                showTwoButtons: false
+            };
+        } else {
+            return {
+                primaryText: 'Bắt đầu',
+                primaryIcon: <ChevronRight className="w-4 h-4 mr-1" />,
+                primaryClassName: 'bg-blue-600 hover:bg-blue-700',
+                primaryAction: 'start',
+                showTwoButtons: false
+            };
+        }
+    };
+
+    const handleLessonAction = (lesson, action) => {
+        if (action === 'review') {
+            // Vào bài học với trạng thái review
+            navigate(`/writting/${lesson.skill_id}?mode=review`);
+        } else if (action === 'retry') {
+            // Làm lại bài học
+            navigate(`/writting/${lesson.skill_id}?mode=retry`);
+        } else {
+            // Vào bài học bình thường (start hoặc continue)
+            navigate(`/writting/${lesson.skill_id}`);
+        }
     };
 
     const handlePreviewClick = (lesson) => {
@@ -252,36 +378,55 @@ const Writting = () => {
                                             style={{ width: `${getProgressWidth(lesson.completed_exercises, lesson.total_exercises)}%` }}
                                         ></div>
                                     </div>
+                                    {/* Status indicator */}
+                                    <div className="mt-2 text-xs">
+                                        {lesson.completed_exercises >= lesson.total_exercises && lesson.total_exercises > 0 && (
+                                            <span className="text-green-600 font-medium">✓ Hoàn thành</span>
+                                        )}
+                                        {lesson.completed_exercises > 0 && lesson.completed_exercises < lesson.total_exercises && (
+                                            <span className="text-blue-600 font-medium">⟳ Đang học</span>
+                                        )}
+                                        {lesson.completed_exercises === 0 && (
+                                            <span className="text-gray-500">○ Chưa bắt đầu</span>
+                                        )}
+                                    </div>
                                 </div>
 
+                                {/* Action Buttons */}
                                 <div className="flex gap-2">
-                                    <button
-                                        onClick={() => handlePreviewClick(lesson)}
-                                        className="flex-1 bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors text-sm font-medium"
-                                    >
-                                        Preview
-                                    </button>
-                                    <button
-                                        onClick={() => handleActionButton(lesson)}
-                                        className="flex-1 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors text-sm font-medium flex items-center justify-center"
-                                    >
-                                        {lesson.completed_exercises === lesson.total_exercises ? (
-                                            <>
-                                                <Award className="w-4 h-4 mr-1" />
-                                                Completed
-                                            </>
-                                        ) : lesson.completed_exercises > 0 ? (
-                                            <>
-                                                <Pen className="w-4 h-4 mr-1" />
-                                                Continue
-                                            </>
-                                        ) : (
-                                            <>
-                                                <ChevronRight className="w-4 h-4 mr-1" />
-                                                Start
-                                            </>
-                                        )}
-                                    </button>
+                                    {(() => {
+                                        const buttonInfo = getButtonInfo(lesson);
+                                        if (buttonInfo.showTwoButtons) {
+                                            return (
+                                                <>
+                                                    <button
+                                                        onClick={() => handleLessonAction(lesson, buttonInfo.primaryAction)}
+                                                        className={`flex-1 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium flex items-center justify-center ${buttonInfo.primaryClassName}`}
+                                                    >
+                                                        {buttonInfo.primaryIcon}
+                                                        {buttonInfo.primaryText}
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleLessonAction(lesson, buttonInfo.secondaryAction)}
+                                                        className={`flex-1 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium flex items-center justify-center ${buttonInfo.secondaryClassName}`}
+                                                    >
+                                                        {buttonInfo.secondaryIcon}
+                                                        {buttonInfo.secondaryText}
+                                                    </button>
+                                                </>
+                                            );
+                                        } else {
+                                            return (
+                                                <button
+                                                    onClick={() => handleLessonAction(lesson, buttonInfo.primaryAction)}
+                                                    className={`flex-1 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium flex items-center justify-center ${buttonInfo.primaryClassName}`}
+                                                >
+                                                    {buttonInfo.primaryIcon}
+                                                    {buttonInfo.primaryText}
+                                                </button>
+                                            );
+                                        }
+                                    })()}
                                 </div>
                             </div>
                         </div>
